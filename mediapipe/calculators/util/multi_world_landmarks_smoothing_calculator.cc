@@ -53,11 +53,19 @@ class MultiWorldLandmarksSmoothingCalculatorImpl
     const auto& timestamp =
         absl::Microseconds(cc->InputTimestamp().Microseconds());
 
-    const auto& tracking_ids = kTrackingIds(cc).Get();
+    //const auto& tracking_ids = kTrackingIds(cc).Get();
+    // TODO: This is a temporary change. Undo this, once mediapipe has added proper support for
+    // landmark smoothing
+    static std::vector<int64_t> tracking_ids;
+    if(tracking_ids.empty()) {
+      tracking_ids.resize(100);
+      for(size_t i=0;i<tracking_ids.size();++i)
+        tracking_ids[i] = i;
+    }
     multi_filters_.ClearUnused(tracking_ids);
 
     const auto& in_landmarks_vec = kInLandmarks(cc).Get();
-    RET_CHECK_EQ(in_landmarks_vec.size(), tracking_ids.size());
+    // RET_CHECK_EQ(in_landmarks_vec.size(), tracking_ids.size());
 
     std::optional<std::vector<Rect>> object_scale_roi_vec;
     if (kObjectScaleRoi(cc).IsConnected() && !kObjectScaleRoi(cc).IsEmpty()) {
@@ -66,7 +74,7 @@ class MultiWorldLandmarksSmoothingCalculatorImpl
     }
 
     std::vector<LandmarkList> out_landmarks_vec;
-    for (int i = 0; i < tracking_ids.size(); ++i) {
+    for (int i = 0; i < in_landmarks_vec.size(); ++i) {
       const auto& in_landmarks = in_landmarks_vec[i];
 
       std::optional<float> object_scale;
