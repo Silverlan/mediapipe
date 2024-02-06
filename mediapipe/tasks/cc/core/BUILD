@@ -308,6 +308,9 @@ cc_library_with_tflite(
     name = "base_task_api",
     hdrs = ["base_task_api.h"],
     visibility = ["//visibility:public"],
+    tflite_deps = [
+        ":task_runner",
+    ],
     deps = [
         ":task_runner",
     ],

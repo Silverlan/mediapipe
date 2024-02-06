@@ -110,9 +110,9 @@ absl::Status ModelResources::BuildModelFromExternalFileProto() {
     } else {
       // If the model file name is a relative path, searches the file in a
       // platform-specific location and returns the absolute path on success.
-      /*ASSIGN_OR_RETURN(std::string path_to_resource,
-                       PathToResourceAsFile(model_file_->file_name()));
-      model_file_->set_file_name(path_to_resource);*/
+      MP_ASSIGN_OR_RETURN(std::string path_to_resource,
+                          PathToResourceAsFile(model_file_->file_name()));
+      model_file_->set_file_name(path_to_resource);
     }
   }
   MP_ASSIGN_OR_RETURN(
