@@ -114,6 +114,7 @@ cc_library(
 cc_library(
     name = "pose_landmarker_graph",
     srcs = ["pose_landmarker_graph.cc"],
+    visibility = ["//visibility:public"],
     deps = [
         ":pose_landmarks_detector_graph",
         "//mediapipe/calculators/core:clip_vector_size_calculator",

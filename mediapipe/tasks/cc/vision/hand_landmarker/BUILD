@@ -108,6 +108,7 @@ cc_library(
 cc_library(
     name = "hand_landmarker_graph",
     srcs = ["hand_landmarker_graph.cc"],
+    visibility = ["//visibility:public"],
     deps = [
         ":hand_landmarks_detector_graph",
         "//mediapipe/calculators/core:begin_loop_calculator",

@@ -57,6 +57,7 @@ cc_library(
     name = "external_file_handler",
     srcs = ["external_file_handler.cc"],
     hdrs = ["external_file_handler.h"],
+    visibility = ["//visibility:public"],
     deps = [
         "//mediapipe/framework/port:integral_types",
         "//mediapipe/framework/port:status",

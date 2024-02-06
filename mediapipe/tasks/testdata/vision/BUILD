@@ -218,6 +218,7 @@ filegroup(
         "selfie_segmentation.tflite",
         "selfie_segmentation_landscape.tflite",
     ],
+    visibility = ["//visibility:public"],
 )
 
 filegroup(

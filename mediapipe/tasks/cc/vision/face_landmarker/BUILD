@@ -169,6 +169,7 @@ cc_library(
 cc_library(
     name = "face_landmarker_graph",
     srcs = ["face_landmarker_graph.cc"],
+    visibility = ["//visibility:public"],
     deps = [
         ":face_landmarks_detector_graph",
         "//mediapipe/calculators/core:begin_loop_calculator",

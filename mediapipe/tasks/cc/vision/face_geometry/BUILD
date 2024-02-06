@@ -19,6 +19,7 @@ package(default_visibility = ["//mediapipe/tasks:internal"])
 cc_library(
     name = "face_geometry_from_landmarks_graph",
     srcs = ["face_geometry_from_landmarks_graph.cc"],
+    visibility = ["//visibility:public"],
     deps = [
         "//mediapipe/calculators/core:begin_loop_calculator",
         "//mediapipe/calculators/core:end_loop_calculator",
