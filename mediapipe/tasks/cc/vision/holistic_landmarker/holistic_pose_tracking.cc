@@ -196,7 +196,7 @@ TrackHolisticPoseUsingCustomPoseDetection(
                                                            image_size, graph);
   auto auxiliary_landmarks_smoothed = SmoothLandmarks(
       auxiliary_landmarks, image_size, scale_roi,
-      {// Min cutoff 0.01 results into ~0.002 alpha in landmark EMA filter when
+	  mediapipe::api2::builder::OneEuroFilterConfig {// Min cutoff 0.01 results into ~0.002 alpha in landmark EMA filter when
        // landmark is static.
        /*.min_cutoff = */ 0.01,
        // Beta 10.0 in combintation with min_cutoff 0.01 results into ~0.68
@@ -221,7 +221,7 @@ TrackHolisticPoseUsingCustomPoseDetection(
         pose_landmarks_raw, /*low_pass_filter_alpha=*/0.1f, graph);
     pose_landmarks = SmoothLandmarks(
         *pose_landmarks, image_size, scale_roi,
-        {// Min cutoff 0.05 results into ~0.01 alpha in landmark EMA filter when
+		mediapipe::api2::builder::OneEuroFilterConfig {// Min cutoff 0.05 results into ~0.01 alpha in landmark EMA filter when
          // landmark is static.
          /*.min_cutoff = */ 0.05f,
          // Beta 80.0 in combination with min_cutoff 0.05 results into ~0.94
@@ -243,7 +243,7 @@ TrackHolisticPoseUsingCustomPoseDetection(
     world_landmarks = SmoothLandmarks(
         *world_landmarks,
         /*scale_roi=*/std::nullopt,
-        {// Min cutoff 0.1 results into ~ 0.02 alpha in landmark EMA filter when
+		mediapipe::api2::builder::OneEuroFilterConfig {// Min cutoff 0.1 results into ~ 0.02 alpha in landmark EMA filter when
          // landmark is static.
          /*.min_cutoff = */ 0.1f,
          // Beta 40.0 in combination with min_cutoff 0.1 results into ~0.8
