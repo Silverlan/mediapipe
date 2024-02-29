@@ -42,6 +42,7 @@ cc_library(
 cc_library(
     name = "face_blendshapes_graph",
     srcs = ["face_blendshapes_graph.cc"],
+    visibility = ["//visibility:public"],
     deps = [
         "//mediapipe/calculators/core:split_proto_list_calculator",
         "//mediapipe/calculators/core:split_vector_calculator",
