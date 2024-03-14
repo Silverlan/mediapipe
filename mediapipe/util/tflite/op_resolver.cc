@@ -49,10 +49,10 @@ TfLiteRegistration* RegisterMaxPoolingWithArgmax2D() {
         r,
         [](TfLiteOpaqueContext* context,
            TfLiteOpaqueNode* node) -> TfLiteStatus { return kTfLiteOk; });
-    TfLiteOperatorSetInvoke(
-        r, [](TfLiteOpaqueContext* context, TfLiteOpaqueNode*) -> TfLiteStatus {
-          TfLiteOpaqueContextReportError(
-              context, "MaxPoolingWithArgmax2D is only available on the GPU.");
+    TfLiteRegistrationExternalSetInvoke(
+        r, +[](TfLiteOpaqueContext* context, TfLiteOpaqueNode*) -> TfLiteStatus {
+          //TfLiteOpaqueContextReportError(
+          //    context, "MaxPoolingWithArgmax2D is only available on the GPU.");
           return kTfLiteError;
         });
     return r;
