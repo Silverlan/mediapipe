@@ -310,12 +310,6 @@ cc_library_with_tflite(
     tflite_deps = [
         ":task_runner",
     ],
-    deps = [
-        ":task_runner",
-    ],
-    deps = [
-        ":task_runner",
-    ],
     visibility = ["//visibility:public"],
     deps = [
         "//mediapipe/calculators/core:flow_limiter_calculator",
