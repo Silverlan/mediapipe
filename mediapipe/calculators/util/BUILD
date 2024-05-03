@@ -991,6 +991,23 @@ cc_library(
 )
 
 cc_library(
+    name = "world_landmarks_smoothing_calculator",
+    srcs = ["world_landmarks_smoothing_calculator.cc"],
+    hdrs = ["world_landmarks_smoothing_calculator.h"],
+    deps = [
+        ":landmarks_smoothing_calculator_cc_proto",
+        ":landmarks_smoothing_calculator_utils",
+        "//mediapipe/framework:calculator_framework",
+        "//mediapipe/framework:timestamp",
+        "//mediapipe/framework/api2:node",
+        "//mediapipe/framework/formats:landmark_cc_proto",
+        "//mediapipe/framework/formats:rect_cc_proto",
+        "//mediapipe/framework/port:ret_check",
+    ],
+    alwayslink = 1,
+)
+
+cc_library(
     name = "multi_world_landmarks_smoothing_calculator",
     srcs = ["multi_world_landmarks_smoothing_calculator.cc"],
     hdrs = ["multi_world_landmarks_smoothing_calculator.h"],
