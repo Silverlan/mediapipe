@@ -16,11 +16,13 @@
 
 namespace mediapipe {
 
+#if !defined(_MSC_VER)
 template <>
 thread_local CalculatorContext*
     LegacyCalculatorSupport::Scoped<CalculatorContext>::current_ = nullptr;
 template <>
 thread_local CalculatorContract*
     LegacyCalculatorSupport::Scoped<CalculatorContract>::current_ = nullptr;
+#endif
 
 }  // namespace mediapipe

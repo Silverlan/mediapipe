@@ -16,7 +16,9 @@
 
 namespace mediapipe {
 
+#if !defined(_MSC_VER)
 const GraphService<GpuResources> kGpuService(
     "kGpuService", GraphServiceBase::kAllowDefaultInitialization);
+#endif
 
 }  // namespace mediapipe
