@@ -21,7 +21,6 @@
 #include <cstdlib>
 #include <fstream>
 #include <functional>
-#include <iostream>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -124,15 +123,6 @@ absl::Status XnnWeightsCache::Finalize() {
   return absl::OkStatus();
 }
 
-absl::StatusOr<std::shared_ptr<XnnWeightsCache>> CreateWeightsCache(
-    size_t buffer_size) {
-  RET_CHECK_EQ(xnn_status_success, xnn_initialize(/*allocator=*/nullptr));
-  xnn_weights_cache_t weights_cache = nullptr;
-  RET_CHECK_EQ(xnn_status_success,
-               xnn_create_weights_cache_with_size(buffer_size, &weights_cache));
-  return std::make_shared<XnnWeightsCache>(weights_cache);
-}
-
 absl::StatusOr<std::unique_ptr<XnnGraph>> XnnGraphBuilder::Build() {
   VLOG(2) << "XnnGraphBuilder::Build() building...";
   RET_CHECK_EQ(xnn_status_success, xnn_initialize(nullptr));
@@ -170,7 +160,7 @@ absl::StatusOr<std::unique_ptr<XnnGraph>> XnnGraphBuilder::Build() {
 
   XnnSubgraphPtr subgraph{subgraph_ptr, xnn_delete_subgraph};
 
-  for (auto& t : static_weights_) {
+  for (auto& t : static_weights_added_order_) {
     MP_RETURN_IF_ERROR(t->DefineWeight(*subgraph_ptr));
   }
   for (auto& input : input_tensors_added_order_) {
@@ -191,7 +181,6 @@ absl::StatusOr<std::unique_ptr<XnnGraph>> XnnGraphBuilder::Build() {
                   std::make_unique<RuntimeConfigs>(*runtime_configs_));
   result.input_tensors_ = std::move(input_tensors_added_order_);
   result.output_tensors_ = std::move(output_tensors);
-  result.static_weights_ = std::move(static_weights_);
 
   VLOG(2) << "XnnGraphBuilder::Build() creating runtime...";
   MP_RETURN_IF_ERROR(result.CreateRuntime());
@@ -204,10 +193,10 @@ absl::StatusOr<std::unique_ptr<XnnGraph>> XnnGraphBuilder::Build() {
 }
 
 absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::NewInput(
-    Tensor::DimsType dims, absl::string_view source) {
+    Tensor::DimsType dims, absl::string_view tag) {
   auto t = std::make_shared<Tensor>(std::move(dims), data_type_);
   t->AllocateBufferIfNeeded();
-  t->source = source;
+  t->tag = tag;
   MP_RETURN_IF_ERROR(MarkInput(t));
   return t;
 }
@@ -219,22 +208,24 @@ absl::Status XnnGraphBuilder::MarkInput(std::shared_ptr<Tensor> t) {
 }
 
 void XnnGraphBuilder::NewWeight(std::shared_ptr<Tensor> t) {
-  if (interm_tensors_.contains(t) || input_tensors_.contains(t)) {
+  if (interm_tensors_.contains(t) || input_tensors_.contains(t) ||
+      static_weights_.contains(t)) {
     return;
   }
 
+  static_weights_added_order_.push_back(t);
   static_weights_.insert(t);
 }
 
 absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::IntermediateTensor(
-    Tensor::DimsType dims, absl::string_view source) {
-  return IntermediateTensor(dims, data_type_, source);
+    Tensor::DimsType dims, absl::string_view tag) {
+  return IntermediateTensor(dims, data_type_, tag);
 }
 
 absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::IntermediateTensor(
-    Tensor::DimsType dims, xnn_datatype data_type, absl::string_view source) {
+    Tensor::DimsType dims, xnn_datatype data_type, absl::string_view tag) {
   auto t = std::make_shared<Tensor>(std::move(dims), data_type);
-  t->source = source;
+  t->tag = tag;
 
   build_steps_.push_back([this, t](xnn_subgraph_t subgraph) -> absl::Status {
     // Could be moved to output tensors, thus need check.
@@ -247,6 +238,29 @@ absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::IntermediateTensor(
   interm_tensors_.insert(t);
   interm_tensors_added_order_.push_back(t);
   return t;
+}
+
+absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::ExpandDims(
+    std::shared_ptr<Tensor> input, Tensor::DimsType new_axes) {
+  Tensor::DimsType output_dims = input->dims;
+
+  // Compute output shape.
+  for (size_t dim_idx = 0; dim_idx < new_axes.size(); ++dim_idx) {
+    output_dims.insert(output_dims.begin() + new_axes[dim_idx], 1);
+  }
+
+  MP_ASSIGN_OR_RETURN(auto output, IntermediateTensor(std::move(output_dims),
+                                                      "expand_dims_output"));
+  build_steps_.push_back(
+      [input, output, new_axes](xnn_subgraph_t subgraph) -> absl::Status {
+        RET_CHECK_EQ(xnn_status_success,
+                     xnn_define_static_expand_dims(
+                         subgraph, new_axes.size(), new_axes.data(),
+                         input->tensor_id(subgraph),
+                         output->tensor_id(subgraph), /*flags=*/0));
+        return absl::OkStatus();
+      });
+  return output;
 }
 
 absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::Reshape(
@@ -380,10 +394,11 @@ absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::FullConn(
   build_steps_.push_back([input, weight, bias, params, output,
                           qd_input](xnn_subgraph_t subgraph) -> absl::Status {
     if (qd_input) {
-      RET_CHECK_EQ(
-          xnn_status_success,
-          xnn_define_convert(subgraph, input->tensor_id(subgraph),
-                             qd_input->tensor_id(subgraph), /*flags=*/0));
+      // Set XNN_FLAG_MAYBE_PACK_FOR_GEMM if the weights are 4 bit.
+      uint32_t flags = weight->datatype == xnn_datatype_qcint4 ? 0x00000080 : 0;
+      RET_CHECK_EQ(xnn_status_success,
+                   xnn_define_convert(subgraph, input->tensor_id(subgraph),
+                                      qd_input->tensor_id(subgraph), flags));
       RET_CHECK_EQ(
           xnn_status_success,
           xnn_define_fully_connected(
@@ -461,11 +476,11 @@ absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::Slice(
 }
 
 absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::Slice(
-    std::shared_ptr<Tensor> input, size_t axis, size_t offset, size_t length) {
+    std::shared_ptr<Tensor> input, size_t axis, int64_t offset, size_t length) {
   const auto& input_dims = input->dims;
-  Tensor::DimsType offsets(input_dims.size(), 0);
+  std::vector<int64_t> offsets(input_dims.size(), 0);
   offsets[axis] = offset;
-  Tensor::DimsType output_dims = input_dims;
+  std::vector<size_t> output_dims = input_dims;
   output_dims[axis] = length;
   Tensor::DimsType inferrable_output_dims(input_dims.size(), 0);
   inferrable_output_dims[axis] = length;
@@ -476,7 +491,7 @@ absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::Slice(
   build_steps_.push_back([input, output, offsets, inferrable_output_dims](
                              xnn_subgraph_t subgraph) -> absl::Status {
     RET_CHECK_EQ(xnn_status_success,
-                 xnn_define_static_slice(
+                 xnn_define_static_slice_v2(
                      subgraph, offsets.size(), offsets.data(),
                      inferrable_output_dims.data(), input->tensor_id(subgraph),
                      output->tensor_id(subgraph), /*flags=*/0));
@@ -620,10 +635,14 @@ absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::RmsNorm(
   // div_out = input / rms
   MP_ASSIGN_OR_RETURN(auto div_out, ElementDiv(input, clamped_rms));
 
-  // div_out * (1 + scale) = div_out + div_out * scale
-  MP_ASSIGN_OR_RETURN(auto normed_div_out, ElementMul(div_out, scale));
+  if (scale) {
+    // div_out * (1 + scale) = div_out + div_out * scale
+    MP_ASSIGN_OR_RETURN(auto normed_div_out, ElementMul(div_out, scale));
 
-  return ElementAdd(div_out, normed_div_out);
+    return ElementAdd(div_out, normed_div_out);
+  } else {
+    return div_out;
+  }
 }
 
 absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::ElementAdd(
@@ -657,6 +676,15 @@ absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::ElementAdd(
 }
 
 absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::ElementSub(
+    float lhs, std::shared_ptr<Tensor> rhs, ClampParams params) {
+  auto lhs_tensor =
+      std::make_shared<Tensor>(Tensor::DimsType{1}, xnn_datatype_fp32);
+  MP_RETURN_IF_ERROR(lhs_tensor->LoadFromVec(std::vector<float>({lhs})));
+
+  return ElementSub(lhs_tensor, rhs, params);
+}
+
+absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::ElementSub(
     std::shared_ptr<Tensor> lhs, float rhs, ClampParams params) {
   auto rhs_tensor =
       std::make_shared<Tensor>(Tensor::DimsType{1}, xnn_datatype_fp32);
@@ -671,6 +699,7 @@ absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::ElementSub(
   MP_ASSIGN_OR_RETURN(auto output,
                       IntermediateTensor(OutDimsForElementwiseOp(*lhs, *rhs),
                                          "element_sub_output"));
+  NewWeight(lhs);
   NewWeight(rhs);
 
   build_steps_.push_back([lhs, rhs, output,
@@ -826,24 +855,67 @@ absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::BatchMatMul(
   const auto& rhs_dim = weight->dims;
 
   // [B, N, T, S] . [B, N', H, S]
-  RET_CHECK_EQ(lhs_dim.size(), 4);
-  RET_CHECK_EQ(rhs_dim.size(), 4);
-  RET_CHECK_EQ(lhs_dim.back(), rhs_dim.back());
-  const size_t N = std::max(lhs_dim[1], rhs_dim[1]);
-  const size_t H = rhs_dim[2];
-  const size_t T = lhs_dim[2];
+  RET_CHECK_GE(lhs_dim.size(), 3);
+  RET_CHECK_GE(rhs_dim.size(), 3);
+  uint32_t flags = 0;
+  const size_t N =
+      std::max(lhs_dim[lhs_dim.size() - 3], rhs_dim[rhs_dim.size() - 3]);
+  const size_t T = lhs_dim[lhs_dim.size() - 2];
+  size_t H;
+  if (!params.transpose) {
+    RET_CHECK_EQ(lhs_dim.back(), rhs_dim.back());
+    flags = XNN_FLAG_TRANSPOSE_B;
+    H = rhs_dim[rhs_dim.size() - 2];
+  } else {
+    RET_CHECK_EQ(lhs_dim.back(), rhs_dim[rhs_dim.size() - 2]);
+    H = rhs_dim[rhs_dim.size() - 1];
+  }
 
+  size_t batch_size = lhs_dim.size() == 3 ? 1 : lhs_dim[0];
   NewWeight(weight);
-  MP_ASSIGN_OR_RETURN(auto output, IntermediateTensor({lhs_dim[0], N, T, H},
-                                                      "batch_mat_mul_output"));
+  std::vector<size_t> dims(std::max(lhs_dim.size(), rhs_dim.size()));
+  dims[dims.size() - 1] = H;
+  dims[dims.size() - 2] = T;
+  dims[dims.size() - 3] = N;
+  if (dims.size() > 3) {
+    dims[0] = batch_size;
+  }
+  MP_ASSIGN_OR_RETURN(auto output,
+                      IntermediateTensor(dims, "batch_mat_mul_output"));
 
-  build_steps_.push_back([input, output,
-                          weight](xnn_subgraph_t subgraph) -> absl::Status {
-    RET_CHECK_EQ(
-        xnn_status_success,
-        xnn_define_batch_matrix_multiply(
-            subgraph, input->tensor_id(subgraph), weight->tensor_id(subgraph),
-            output->tensor_id(subgraph), /*flags=*/XNN_FLAG_TRANSPOSE_B));
+  std::shared_ptr<Tensor> qd_input;
+  bool use_dynamic_quantization = false;
+  if (runtime_configs_->use_dynamic_quantization.has_value()) {
+    use_dynamic_quantization =
+        runtime_configs_->use_dynamic_quantization.value();
+  } else if (weight->datatype == xnn_datatype_qcint8 ||
+             weight->datatype == xnn_datatype_qcint4) {
+    use_dynamic_quantization = true;
+  }
+  VLOG(3) << "use_dynamic_quantization: " << use_dynamic_quantization;
+  if (use_dynamic_quantization) {
+    MP_ASSIGN_OR_RETURN(
+        qd_input, IntermediateTensor({input->dims.begin(), input->dims.end()},
+                                     xnn_datatype_qdint8));
+  }
+  build_steps_.push_back([input, output, weight, flags,
+                          qd_input](xnn_subgraph_t subgraph) -> absl::Status {
+    if (qd_input) {
+      RET_CHECK_EQ(
+          xnn_status_success,
+          xnn_define_convert(subgraph, input->tensor_id(subgraph),
+                             qd_input->tensor_id(subgraph), /*flags=*/0));
+      RET_CHECK_EQ(
+          xnn_status_success,
+          xnn_define_batch_matrix_multiply(
+              subgraph, qd_input->tensor_id(subgraph),
+              weight->tensor_id(subgraph), output->tensor_id(subgraph), flags));
+    } else {
+      RET_CHECK_EQ(xnn_status_success, xnn_define_batch_matrix_multiply(
+                                           subgraph, input->tensor_id(subgraph),
+                                           weight->tensor_id(subgraph),
+                                           output->tensor_id(subgraph), flags));
+    }
 
     return absl::OkStatus();
   });
@@ -960,7 +1032,8 @@ absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::QKVAttention(
     Tensor::DimsType reshape_hint) {
   RET_CHECK_EQ(query->dims.size(), 4);
   RET_CHECK_EQ(key_or_value->dims.size(), 4);
-  return BatchMatMul(query, key_or_value);
+  FullConnParams params{.transpose = false};
+  return BatchMatMul(query, key_or_value, params);
 }
 
 absl::Status XnnGraph::CreateRuntime() {
@@ -1106,33 +1179,17 @@ absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::Clamp(
 
 absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::Gelu(
     std::shared_ptr<Tensor> input) {
-  // x^2
-  MP_ASSIGN_OR_RETURN(auto sqr_out, Square(input));
-
-  // 0.044715 * x^2
-  MP_ASSIGN_OR_RETURN(auto sqr_4471, ElementMul(sqr_out, 0.044715));
-
-  // 1 + 0.044715 * x^2
-  MP_ASSIGN_OR_RETURN(auto sqr_4471_1, ElementAdd(sqr_4471, 1.0f));
-
-  // x + 0.044715 * x^3
-  MP_ASSIGN_OR_RETURN(auto x_cube_4471, ElementMul(sqr_4471_1, input));
-
-  constexpr float sqrt_2_over_pi = 0.7978845608;
-  MP_ASSIGN_OR_RETURN(auto sqrt_2_over_pi_x_cube_4471,
-                      ElementMul(x_cube_4471, sqrt_2_over_pi));
-
-  // tanh(x + 0.044715 * x^3)
-  MP_ASSIGN_OR_RETURN(auto tanh_x_cube_4471, Tanh(sqrt_2_over_pi_x_cube_4471));
-
-  // 1 + tanh(x + 0.044715 * x^3)
-  MP_ASSIGN_OR_RETURN(auto tanh_x_cube_4471_1,
-                      ElementAdd(tanh_x_cube_4471, 1.0f));
-
-  // 0.5 * (1 + [tanh(x + 0.044715 * x^3)])
-  MP_ASSIGN_OR_RETURN(auto cdf, ElementMul(tanh_x_cube_4471_1, 0.5));
-
-  return ElementMul(input, cdf);
+  MP_ASSIGN_OR_RETURN(auto output,
+                      IntermediateTensor(input->dims, "gelu_output"));
+  build_steps_.push_back(
+      [output, input](xnn_subgraph_t subgraph) -> absl::Status {
+        RET_CHECK_EQ(xnn_status_success,
+                     xnn_define_gelu(subgraph, input->tensor_id(subgraph),
+                                     output->tensor_id(subgraph),
+                                     /*flags=*/0));
+        return absl::Status();
+      });
+  return output;
 }
 
 absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::Sigmoid(
@@ -1159,6 +1216,65 @@ absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::Silu(
 absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::Relu(
     std::shared_ptr<Tensor> input) {
   return Clamp(input, {.out_min = 0});
+}
+
+absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::Relu1p5(
+    std::shared_ptr<Tensor> input) {
+  MP_ASSIGN_OR_RETURN(auto relu_output, Relu(input));
+  MP_ASSIGN_OR_RETURN(auto sqrt_output, SquareRoot(relu_output));
+  return ElementMul(relu_output, sqrt_output);
+}
+
+absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::Abs(
+    std::shared_ptr<Tensor> input) {
+  MP_ASSIGN_OR_RETURN(auto output,
+                      IntermediateTensor(input->dims, "abs_output"));
+
+  build_steps_.push_back(
+      [input, output](xnn_subgraph_t subgraph) -> absl::Status {
+        RET_CHECK_EQ(xnn_status_success,
+                     xnn_define_abs(subgraph, input->tensor_id(subgraph),
+                                    output->tensor_id(subgraph),
+                                    /*flags=*/0));
+        return absl::OkStatus();
+      });
+  return output;
+}
+
+absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::Log(
+    std::shared_ptr<Tensor> input) {
+  MP_ASSIGN_OR_RETURN(auto output,
+                      IntermediateTensor(input->dims, "log_output"));
+
+  build_steps_.push_back(
+      [input, output](xnn_subgraph_t subgraph) -> absl::Status {
+        RET_CHECK_EQ(xnn_status_success,
+                     xnn_define_log(subgraph, input->tensor_id(subgraph),
+                                    output->tensor_id(subgraph),
+                                    /*flags=*/0));
+        return absl::OkStatus();
+      });
+
+  return output;
+}
+
+absl::StatusOr<std::shared_ptr<Tensor>> XnnGraphBuilder::CopySign(
+    std::shared_ptr<Tensor> lhs, std::shared_ptr<Tensor> rhs) {
+  MP_ASSIGN_OR_RETURN(auto output,
+                      IntermediateTensor(OutDimsForElementwiseOp(*lhs, *rhs),
+                                         "copysign_output"));
+
+  build_steps_.push_back(
+      [lhs, rhs, output](xnn_subgraph_t subgraph) -> absl::Status {
+        RET_CHECK_EQ(xnn_status_success,
+                     xnn_define_copysign(subgraph, lhs->tensor_id(subgraph),
+                                         rhs->tensor_id(subgraph),
+                                         output->tensor_id(subgraph),
+                                         /*flags=*/0));
+        return absl::OkStatus();
+      });
+
+  return output;
 }
 
 }  // namespace xnn_utils
