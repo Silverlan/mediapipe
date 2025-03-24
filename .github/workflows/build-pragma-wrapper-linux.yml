@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
+        with:
+          path: mediapipe
 
       - name: Install OpenCV
         shell: bash
@@ -34,13 +36,6 @@ jobs:
           # Requires a GPU with EGL driver support.
           # Can use mesa GPU libraries for desktop, (or Nvidia/AMD equivalent).
           sudo apt-get install mesa-common-dev libegl1-mesa-dev libgles2-mesa-dev
-
-      - name: Clone Mediapipe
-        shell: bash
-        run: |
-          git clone https://github.com/Silverlan/mediapipe.git
-          cd mediapipe
-          git checkout 9ea1acfd70ae0679c05c6c44871a4be5abc16ad7
 
       - name: Clone mediapipe_pragma_wrapper
         uses: actions/checkout@v3
