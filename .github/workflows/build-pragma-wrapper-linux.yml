@@ -1,0 +1,133 @@
+name: Build Pragma Mediapipe Wraper - Linux
+
+on:
+  push:
+    branches: [ pragma ]
+  pull_request:
+    branches: [ pragma ]
+  schedule:
+    - cron: '0 0 * * *'
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Install OpenCV
+        shell: bash
+        run: |
+          sudo apt-get install -y \
+              libopencv-core-dev \
+              libopencv-highgui-dev \
+              libopencv-calib3d-dev \
+              libopencv-features2d-dev \
+              libopencv-imgproc-dev \
+              libopencv-video-dev
+          sudo apt-get install -y libopencv-contrib-dev
+
+      - name: Desktop example prerequisites
+        shell: bash
+        run: |
+          # Requires a GPU with EGL driver support.
+          # Can use mesa GPU libraries for desktop, (or Nvidia/AMD equivalent).
+          sudo apt-get install mesa-common-dev libegl1-mesa-dev libgles2-mesa-dev
+
+      - name: Clone Mediapipe
+        shell: bash
+        run: |
+          git clone https://github.com/Silverlan/mediapipe.git
+          cd mediapipe
+          git checkout 9ea1acfd70ae0679c05c6c44871a4be5abc16ad7
+
+      - name: Clone mediapipe_pragma_wrapper
+        uses: actions/checkout@v3
+        with:
+          repository: Silverlan/mediapipe_pragma_wrapper
+          token: ${{ secrets.PRAGMA_MEDIAPIPE_WRAPPER_ACCESS_TOKEN }}
+          path: mediapipe_pragma_wrapper
+          ref: 706bb851bab9e0b54ce2113a9a236f5fecab30c4
+
+      - name: Merge mediapipe_pragma_wrapper files
+        shell: bash
+        run: |
+          cp -rfa mediapipe_pragma_wrapper/. mediapipe/
+
+      - name: Install Python Dependencies
+        shell: bash
+        run: |
+          # Install distutils
+          sudo apt install python3-setuptools
+
+          # Install numpy
+          sudo apt install python3-numpy
+
+      - name: Build
+        shell: bash
+        run: |
+          bazel_output_root="$(pwd)/_bazel"
+          cd mediapipe
+
+          # Requires a GPU with EGL driver support.
+          # Can use mesa GPU libraries for desktop, (or Nvidia/AMD equivalent).
+          sudo apt-get install mesa-common-dev libegl1-mesa-dev libgles2-mesa-dev
+          export GLOG_logtostderr=1
+
+          # if you are running on Linux desktop with CPU only
+          bazel --output_user_root="$bazel_output_root" build --define MEDIAPIPE_DISABLE_GPU=1 \
+              mediapipe/examples/desktop/mediapipe_pragma_wrapper:mediapipe_pragma_wrapper
+
+      - name: Get Bazel Output Directory
+        shell: bash
+        id: get-bazel-output-dir
+        run: |
+          curDir=$(pwd)
+
+          so_path=$(find "$curDir/_bazel" -name "libmediapipe_pragma_wrapper.so" | head -n 1)
+
+          if [ -z "$so_path" ]; then
+            echo "File libmediapipe_pragma_wrapper.so not found in $curDir/_bazel."
+            exit 1
+          fi
+
+          echo "Found libmediapipe_pragma_wrapper.so at: $so_path"
+
+          # Extract the top-level directory relative to curDir/_bazel where the .so file was found.
+          # This is done by removing the prefix "$curDir/_bazel/" from the file's path and taking the first directory element.
+          relative_path=${so_path#"$curDir/_bazel/"}
+          top_level_dir=$(echo "$relative_path" | cut -d'/' -f1)
+
+          # Set the additional path variable to the directory: curDir/_bazel/topLevelDirOfPathOfSoFile
+          additional_path="$curDir/_bazel/$top_level_dir"
+
+          echo "Additional path: $additional_path"
+
+          # List all files within the additional directory
+          echo "Listing files in $additional_path:"
+          ls "$additional_path" -R
+
+          echo "output-dir=$additional_path" >> $GITHUB_OUTPUT
+
+      - name: Generate Release Files
+        shell: bash
+        run: |
+          mkdir -p release/data
+          bazel_out_dir="${{ steps.get-bazel-output-dir.outputs.output-dir }}"
+          mpw_dir="$bazel_out_dir/execroot/mediapipe/bazel-out/k8-fastbuild/bin/mediapipe/examples/desktop/mediapipe_pragma_wrapper"
+
+          cp "$mpw_dir/libmediapipe_pragma_wrapper.so" release/
+
+          asset_dir="$mpw_dir/libmediapipe_pragma_wrapper.so.runfiles/mediapipe/mediapipe/tasks/testdata/vision"
+          asset_out_dir="release/data/"
+          cp "$asset_dir"/*.{tflite,task} "$asset_out_dir"
+
+          tar -czvf binaries_linux64.tar.gz -C release .
+
+      - name: Publish Release
+        uses: Silverlan/Releaser/releaser/composite@main
+        with:
+          tag: nightly
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: "binaries_linux64.tar.gz"
